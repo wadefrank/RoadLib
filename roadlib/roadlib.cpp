@@ -9,6 +9,8 @@
  * Author: Yuxuan Zhou (yuxuanzhou@whu.edu.cn)
  *******************************************************/
 
+/// 该代码主要用于处理道路图像数据，通过标签聚类、计算不确定性和生成道路实例补丁，实现道路特征的检测与管理。
+
 #include "roadlib.h"
 
 long long RoadInstancePatch::next_id = 0;
@@ -16,6 +18,12 @@ long long RoadInstancePatchFrame::next_id = 0;
 
 vector<RoadInstancePatch> patches_temp;
 
+/// @brief 对图像中的语义标签进行聚类，并计算每个聚类的统计信息（如面积和中心点）
+/// @param ipm_semantic 输入的语义图像
+/// @param ipm_label 输出的标签图像
+/// @param stats 输出的统计信息，包含每个聚类的面积、边界框等
+/// @param centroids 输出的聚类中心点
+/// @return 
 int LabelClustering(const cv::Mat& ipm_semantic, cv::Mat& ipm_label, cv::Mat& stats, cv::Mat& centroids)
 {
 	cv::Mat ipm_label_stop, stats_stop, centroids_stop;
