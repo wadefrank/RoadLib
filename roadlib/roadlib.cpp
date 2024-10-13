@@ -18,11 +18,12 @@ long long RoadInstancePatchFrame::next_id = 0;
 
 vector<RoadInstancePatch> patches_temp;
 
+// TODO 为什么要将停车线分开处理？
 /// @brief 对图像中的语义标签进行聚类，并计算每个聚类的统计信息（如面积和中心点）
 /// @param ipm_semantic 输入的语义图像
-/// @param ipm_label 输出的标签图像
-/// @param stats 输出的统计信息，包含每个聚类的面积、边界框等
-/// @param centroids 输出的聚类中心点
+/// @param ipm_label 	输出的标签图像
+/// @param stats 		输出的统计信息，包含每个聚类的面积、边界框等
+/// @param centroids 	输出的聚类中心点
 /// @return 
 int LabelClustering(const cv::Mat& ipm_semantic, cv::Mat& ipm_label, cv::Mat& stats, cv::Mat& centroids)
 {
@@ -30,24 +31,30 @@ int LabelClustering(const cv::Mat& ipm_semantic, cv::Mat& ipm_label, cv::Mat& st
 	cv::Mat ipm_semantic_temp;
 	ipm_semantic.copyTo(ipm_semantic_temp);
 	cv::Mat ipm_semantic_stop = cv::Mat::zeros(ipm_semantic.size(), CV_8UC1);
-	ipm_semantic_stop.setTo(255, ipm_semantic == 5);
-	ipm_semantic_temp.setTo(0, ipm_semantic == 5);
+	ipm_semantic_stop.setTo(255, ipm_semantic == 5);	// 将所有值为5的像素设置为255，以便单独处理停车线
+	ipm_semantic_temp.setTo(0, ipm_semantic == 5);		// 将所有值为5的像素设置为0，以便排除不需要的语义类别
 
-	cv::connectedComponentsWithStats(ipm_semantic_temp, ipm_label, stats, centroids, 4, CV_16U);
-	cv::connectedComponentsWithStats(ipm_semantic_stop, ipm_label_stop, stats_stop, centroids_stop, 4, CV_16U);
+	// https://blog.csdn.net/qq_40784418/article/details/106023288：stats：表示每一个标记的统计信息，是一个5列的矩阵，每一行对应每个连通区域的外接矩形的x、y、width、height和面积，示例如下： 0 0 720 720 291805
+	cv::connectedComponentsWithStats(ipm_semantic_temp, ipm_label, stats, centroids, 4, CV_16U);					// 对除停车线外的语义类别进行聚类，得到另一个标签图像、统计信息和中心点
+	cv::connectedComponentsWithStats(ipm_semantic_stop, ipm_label_stop, stats_stop, centroids_stop, 4, CV_16U); 	// 对停车线进行聚类，得到另一个标签图像、统计信息和中心点
 	cv::Mat stats_all, centroids_all;
-	if (stats_stop.rows > 1)
+	if (stats_stop.rows > 1)	// 如果停车线聚类的数量大于1
 	{
-		cv::vconcat(stats, stats_stop(cv::Rect(0, 1, stats_stop.cols, stats_stop.rows - 1)), stats);
-		cv::vconcat(centroids, centroids_stop(cv::Rect(0, 1, centroids_stop.cols, centroids_stop.rows - 1)), centroids);
+		cv::vconcat(stats, stats_stop(cv::Rect(0, 1, stats_stop.cols, stats_stop.rows - 1)), stats);						// 将停车线聚类的统计信息拼接到所有聚类的统计信息中
+		cv::vconcat(centroids, centroids_stop(cv::Rect(0, 1, centroids_stop.cols, centroids_stop.rows - 1)), centroids);	// 将停车线聚类的中心点拼接到所有聚类的中心点中
 	}
-	for (int i = 1; i < stats_stop.rows; i++)
+	for (int i = 1; i < stats_stop.rows; i++) 	// 将停车线聚类的标签值设置为停车线的标签值，然后将第二个标签图像的标签映射到第一个标签图像的索引上
 	{
 		ipm_label.setTo(stats.rows - stats_stop.rows + i, ipm_label_stop == i);
 	}
 	return 0;
 }
 
+/// @brief 计算了图像处理过程中的不确定性，通常用于估计图像重建或特征提取的误差
+/// @param ipm IPM预处理信息，包含图像处理的配置和参数
+/// @param uI 图像中的像素坐标u，是横坐标
+/// @param vI 图像中的像素坐标v，是纵坐标
+/// @return 
 Matrix3d calcUncertainty(const gv::IPMProcesser& ipm, double uI, double vI)
 {
 
@@ -63,25 +70,26 @@ Matrix3d calcUncertainty(const gv::IPMProcesser& ipm, double uI, double vI)
 		0.0, reso_temp, -(ipm._config.IPM_HEIGHT - 1) * reso_temp,
 		0.0, 0.0, d;
 
-	Eigen::Matrix3d K_IPM = K_IPM_i_d.inverse() * d;
+	Eigen::Matrix3d K_IPM = K_IPM_i_d.inverse() * d;	// 给出IPM矩阵
 
 	Vector3d xyI, xy;
 	double xI, yI, x, y;
 	Eigen::MatrixXd F, F1, F2, F3;
-	xyI = K_IPM.inverse() * Vector3d(uI, vI, 1);
+	xyI = K_IPM.inverse() * Vector3d(uI, vI, 1);	// 将像素坐标转换为归一化坐标xyI
 	xI = xyI(0); yI = xyI(1);
-	y = -1 / yI; x = xI * y;
+	y = -1 / yI; x = xI * y;						// 将归一化坐标转换为像素坐标
 
 	// Pixel error.
-	F1 = (Eigen::MatrixXd(2, 2) << d / reso_temp, 0, 0, d / reso_temp).finished();
+	F1 = (Eigen::MatrixXd(2, 2) << d / reso_temp, 0, 0, d / reso_temp).finished();	// 给出像素误差的F矩阵
 	F2 = (Eigen::MatrixXd(2, 2) << 1 / y, -x / y / y, 0, 1 / y / y).finished();
 	F3 = (Eigen::MatrixXd(2, 2) << 1 / fx, 0, 0, 1 / fy).finished();
-	F = F1 * F2 * F3;
+	F = F1 * F2 * F3;	// 计算像素误差的F矩阵
 	MatrixXd var_pixel = (Eigen::MatrixXd(2, 2) << 2, 0, 0, 2).finished();
 	var_pixel = var_pixel * var_pixel;
-	Matrix2d var_pixel_error = F * var_pixel * F.transpose(); // (in pixels)
+	Matrix2d var_pixel_error = F * var_pixel * F.transpose(); // (in pixels)	// 计算像素误差的协方差矩阵
 
 	// Pitch error.
+	// 计算俯仰角误差的协方差矩阵
 	F1 = (Eigen::MatrixXd(2, 2) << d / reso_temp, 0, 0, d / reso_temp).finished();
 	F2 = (Eigen::MatrixXd(2, 1) << x / y / y, (1 + y * y) / (y * y)).finished();
 	F = F1 * F2;
@@ -90,6 +98,7 @@ Matrix3d calcUncertainty(const gv::IPMProcesser& ipm, double uI, double vI)
 	Matrix2d var_pitch_error = F * var_pitch * F.transpose(); // (in pixels)
 
 	// Height error.
+	// 计算高度误差的协方差矩阵
 	F = (Eigen::MatrixXd(2, 1) << xI / reso_temp, yI / reso_temp).finished();
 	double var_D = 0.05;
 	var_D = var_D * var_D;
@@ -97,10 +106,16 @@ Matrix3d calcUncertainty(const gv::IPMProcesser& ipm, double uI, double vI)
 
 	Matrix3d uncertainty = Matrix3d::Identity(3, 3);
 	uncertainty.block(0, 0, 2, 2) = (var_pixel_error + var_pitch_error + var_D_error) * (reso_temp * reso_temp);
-	uncertainty(2, 2) = pow((0.5 * sqrt(uncertainty(1, 1))), 2);
+	uncertainty(2, 2) = pow((0.5 * sqrt(uncertainty(1, 1))), 2);	// 将这些误差矩阵组合成一个3x3的不确定性矩阵
 	return uncertainty;
 }
 
+/// @brief 生成度量空间中的patch，这个是针对一帧的处理
+/// @param config 传感器配置信息的引用
+/// @param ipm gv::IPMProcesser对象的引用
+/// @param ipm_raw 包含原始IPM图像的OpenCV矩阵
+/// @param ipm_class 包含IPM类别信息的OpenCV矩阵
+/// @return 
 RoadInstancePatchFrame generateInstancePatch(const SensorConfig& config, const gv::IPMProcesser& ipm, const cv::Mat& ipm_raw, const cv::Mat& ipm_class)
 {
 	cv::Mat ipm_instance, stats, centroids;
